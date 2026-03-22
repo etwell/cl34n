@@ -38,19 +38,27 @@ from model_registry import pick_task, is_registered
 
 # ── Auto-updater ──────────────────────────────────────────────────────────────
 
-_GITHUB_API  = 'https://api.github.com/repos/etwell/cl34n/commits/main'
-_GITHUB_RAW  = 'https://raw.githubusercontent.com/etwell/cl34n/main'
-_UPDATE_FILES = ['cl34n.py', 'mdx_infer.py', 'model_registry.py']
+_GITHUB_API = 'https://api.github.com/repos/etwell/cl34n/commits/main'
+_GITHUB_RAW = 'https://raw.githubusercontent.com/etwell/cl34n/main'
 
 
 def _check_update():
-    """Fetch latest commit SHA from GitHub. If newer, hot-swap files and restart."""
+    """
+    Fetch the latest commit SHA from GitHub. If newer:
+      1. Download manifest.json to get the full file + package list.
+      2. Download all listed files, install any new packages.
+      3. Restart with the updated code.
+    Silent on any network or install failure.
+    """
     import urllib.request
+    import json
+    import subprocess
 
-    app_dir  = Path(__file__).resolve().parent
-    ver_file = app_dir / 'version.txt'
+    app_dir   = Path(__file__).resolve().parent
+    ver_file  = app_dir / 'version.txt'
     local_sha = ver_file.read_text().strip() if ver_file.exists() else ''
 
+    # Lightweight SHA-only check — single tiny response
     try:
         req = urllib.request.Request(
             _GITHUB_API,
@@ -66,9 +74,22 @@ def _check_update():
 
     print('  Updating CL34N...', end='\r', flush=True)
 
+    files    = []
+    tmp_files = []
     try:
-        tmp_files = []
-        for fname in _UPDATE_FILES:
+        # Read manifest to know what files and packages this version needs
+        req = urllib.request.Request(
+            f'{_GITHUB_RAW}/manifest.json',
+            headers={'User-Agent': 'cl34n-updater'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            manifest = json.loads(resp.read())
+
+        files    = manifest.get('files', [])
+        packages = manifest.get('packages', [])
+
+        # Download every file listed in the manifest to a temp location first
+        for fname in files:
             tmp = app_dir / (fname + '.new')
             req = urllib.request.Request(
                 f'{_GITHUB_RAW}/{fname}',
@@ -78,19 +99,29 @@ def _check_update():
                 tmp.write_bytes(resp.read())
             tmp_files.append((tmp, app_dir / fname))
 
+        # Install any packages the new version needs (pip skips already-installed ones)
+        if packages:
+            subprocess.check_call(
+                [sys.executable, '-m', 'pip', 'install', '--quiet',
+                 '--no-warn-script-location', *packages],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        # All good — atomically swap every file
         for tmp, dest in tmp_files:
+            dest.parent.mkdir(parents=True, exist_ok=True)
             tmp.replace(dest)
 
         ver_file.write_text(remote_sha)
         print('  Updated.          ')
 
-        import subprocess
         subprocess.Popen([sys.executable] + sys.argv)
         sys.exit(0)
 
     except Exception:
-        for fname in _UPDATE_FILES:
-            tmp = app_dir / (fname + '.new')
+        # Clean up any partial downloads — leave current install untouched
+        for tmp, _ in tmp_files:
             if tmp.exists():
                 tmp.unlink()
 
