@@ -61,34 +61,66 @@ function Get-File {
 
 function Test-Cuda {
     Write-Step "Checking NVIDIA GPU..."
+
+    # First try nvidia-smi -- present when drivers are installed
     $nvSmi = $null
     foreach ($c in @('nvidia-smi', 'C:\Windows\System32\nvidia-smi.exe',
                       'C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe')) {
         if (Get-Command $c -ErrorAction SilentlyContinue) { $nvSmi = $c; break }
         if (Test-Path $c) { $nvSmi = $c; break }
     }
-    if (-not $nvSmi) {
-        Write-Host ""
-        Write-Host "  -------------------------------------------------------" -ForegroundColor Red
-        Write-Host "  NVIDIA GPU drivers not found." -ForegroundColor Red
-        Write-Host "  -------------------------------------------------------" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  CL34N uses your NVIDIA GPU to remove music from files." -ForegroundColor White
-        Write-Host "  You need to install the NVIDIA CUDA drivers first." -ForegroundColor White
-        Write-Host ""
-        Write-Host "  1. Go to this link and download the latest driver:" -ForegroundColor Cyan
-        Write-Host "     https://www.nvidia.com/en-us/drivers/" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  2. Run the installer, then restart your computer." -ForegroundColor White
-        Write-Host ""
-        Write-Host "  3. Run this installer again." -ForegroundColor White
-        Write-Host ""
-        Read-Host "  Press Enter to close"
-        exit 1
+
+    if ($nvSmi) {
+        $gpu    = (& $nvSmi --query-gpu=name          --format=csv,noheader 2>&1) | Select-Object -First 1
+        $driver = (& $nvSmi --query-gpu=driver_version --format=csv,noheader 2>&1) | Select-Object -First 1
+        Write-OK "GPU detected: $($gpu.Trim())"
+        return
     }
-    $gpu    = (& $nvSmi --query-gpu=name          --format=csv,noheader 2>&1) | Select-Object -First 1
-    $driver = (& $nvSmi --query-gpu=driver_version --format=csv,noheader 2>&1) | Select-Object -First 1
-    Write-OK "GPU detected: $($gpu.Trim())"
+
+    # nvidia-smi missing -- check if an NVIDIA GPU exists at all via WMI
+    $nvidiaGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Name -like '*NVIDIA*' } |
+                 Select-Object -First 1
+
+    Write-Host ""
+    Write-Host "  -------------------------------------------------------" -ForegroundColor Red
+
+    if ($nvidiaGpu) {
+        # GPU found but driver not installed
+        Write-Host "  NVIDIA GPU found but drivers are not installed." -ForegroundColor Red
+        Write-Host "  -------------------------------------------------------" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Your GPU: $($nvidiaGpu.Name)" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  CL34N needs your NVIDIA display driver to be installed." -ForegroundColor White
+        Write-Host "  (You do NOT need a separate CUDA download -- it's included" -ForegroundColor Gray
+        Write-Host "   in the standard driver.)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  Install your driver in one of two ways:" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  Option A -- NVIDIA App (easiest, auto-detects your GPU):" -ForegroundColor Cyan
+        Write-Host "     https://www.nvidia.com/en-us/software/nvidia-app/" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Option B -- Manual driver download:" -ForegroundColor Cyan
+        Write-Host "     https://www.nvidia.com/en-us/drivers/" -ForegroundColor Cyan
+    } else {
+        # No NVIDIA GPU detected at all
+        Write-Host "  No NVIDIA GPU detected." -ForegroundColor Red
+        Write-Host "  -------------------------------------------------------" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  CL34N requires an NVIDIA graphics card to work." -ForegroundColor White
+        Write-Host "  This computer does not appear to have one." -ForegroundColor White
+        Write-Host ""
+        Write-Host "  If you do have an NVIDIA GPU, try installing its driver:" -ForegroundColor Gray
+        Write-Host "     https://www.nvidia.com/en-us/software/nvidia-app/" -ForegroundColor Cyan
+    }
+
+    Write-Host ""
+    Write-Host "  After installing the driver, restart your computer" -ForegroundColor White
+    Write-Host "  then run this installer again." -ForegroundColor White
+    Write-Host ""
+    Read-Host "  Press Enter to close"
+    exit 1
 }
 
 
