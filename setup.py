@@ -144,10 +144,26 @@ Write-Host ""
     UNINSTALL.write_text(script, encoding='utf-8')
 
 
+def write_version():
+    """Store the current commit SHA so the auto-updater has a baseline."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            'https://api.github.com/repos/etwell/cl34n/commits/main',
+            headers={'Accept': 'application/vnd.github.sha', 'User-Agent': 'cl34n-installer'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            sha = resp.read().decode().strip()
+        (APP_DIR / 'version.txt').write_text(sha)
+    except Exception:
+        pass  # non-fatal — updater will just re-download once on first run
+
+
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 install_packages()
 write_run_bat()
 register_context_menu()
 write_uninstaller()
+write_version()
 

@@ -36,6 +36,67 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from model_registry import pick_task, is_registered
 
+# ── Auto-updater ──────────────────────────────────────────────────────────────
+
+_GITHUB_API  = 'https://api.github.com/repos/etwell/cl34n/commits/main'
+_GITHUB_RAW  = 'https://raw.githubusercontent.com/etwell/cl34n/main'
+_UPDATE_FILES = ['cl34n.py', 'mdx_infer.py', 'model_registry.py']
+
+
+def _check_update():
+    """Fetch latest commit SHA from GitHub. If newer, hot-swap files and restart."""
+    import urllib.request
+
+    app_dir  = Path(__file__).resolve().parent
+    ver_file = app_dir / 'version.txt'
+    local_sha = ver_file.read_text().strip() if ver_file.exists() else ''
+
+    try:
+        req = urllib.request.Request(
+            _GITHUB_API,
+            headers={'Accept': 'application/vnd.github.sha', 'User-Agent': 'cl34n-updater'},
+        )
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            remote_sha = resp.read().decode().strip()
+    except Exception:
+        return  # no internet or GitHub down — run normally
+
+    if remote_sha == local_sha:
+        return  # already up to date
+
+    print('  Updating CL34N...', end='\r', flush=True)
+
+    try:
+        tmp_files = []
+        for fname in _UPDATE_FILES:
+            tmp = app_dir / (fname + '.new')
+            req = urllib.request.Request(
+                f'{_GITHUB_RAW}/{fname}',
+                headers={'User-Agent': 'cl34n-updater'},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                tmp.write_bytes(resp.read())
+            tmp_files.append((tmp, app_dir / fname))
+
+        for tmp, dest in tmp_files:
+            tmp.replace(dest)
+
+        ver_file.write_text(remote_sha)
+        print('  Updated.          ')
+
+        import subprocess
+        subprocess.Popen([sys.executable] + sys.argv)
+        sys.exit(0)
+
+    except Exception:
+        for fname in _UPDATE_FILES:
+            tmp = app_dir / (fname + '.new')
+            if tmp.exists():
+                tmp.unlink()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _fmt_eta(seconds):
     seconds = max(0, int(seconds))
     h, rem = divmod(seconds, 3600)
@@ -246,6 +307,8 @@ def main():
     parser.add_argument('--model', metavar='FILENAME',
                         help='Skip the picker and use this model file directly.')
     args = parser.parse_args()
+
+    _check_update()
 
     base_dir = Path(Path(__file__).resolve().parent)
     mdir     = _models_dir(base_dir)
