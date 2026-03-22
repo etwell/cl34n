@@ -4,15 +4,14 @@
     CL34N Installer - Strips music from video/audio via right-click context menu.
 .DESCRIPTION
     Installs to %LOCALAPPDATA%\CL34N\ with no admin rights required.
-    Downloads isolated Python and FFmpeg -- nothing touches your system Python or PATH.
-    Requires an NVIDIA GPU with CUDA 13.x drivers installed system-wide.
+    Requires an NVIDIA GPU with CUDA drivers installed system-wide.
 .NOTES
     Run with:  powershell -ExecutionPolicy Bypass -File install.ps1
+    Or:        irm https://raw.githubusercontent.com/etwell/cl34n/main/install.ps1 | iex
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
 
 $PYTHON_VERSION = '3.11.9'
 $PYTHON_URL     = "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-embed-amd64.zip"
@@ -22,47 +21,47 @@ $FFMPEG_VERSION = '7.1'
 $FFMPEG_URL     = "https://github.com/GyanD/codexffmpeg/releases/download/$FFMPEG_VERSION/ffmpeg-$FFMPEG_VERSION-essentials_build.zip"
 $FFMPEG_SHA256  = ''
 
-$GET_PIP_URL    = 'https://bootstrap.pypa.io/get-pip.py'
+$GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py'
+$GITHUB_RAW  = 'https://raw.githubusercontent.com/etwell/cl34n/main'
 
-$GITHUB_RAW     = 'https://raw.githubusercontent.com/etwell/cl34n/main'
+$APP_NAME = 'CL34N'
+$ROOT     = Join-Path $env:LOCALAPPDATA $APP_NAME
+$APP_DIR  = Join-Path $ROOT 'app'
+$PY_DIR   = Join-Path $ROOT 'python'
+$FF_DIR   = Join-Path $ROOT 'ffmpeg'
+$PY_EXE   = Join-Path $PY_DIR 'python.exe'
 
-$APP_NAME   = 'CL34N'
-$ROOT       = Join-Path $env:LOCALAPPDATA $APP_NAME
-$APP_DIR    = Join-Path $ROOT 'app'
-$PY_DIR     = Join-Path $ROOT 'python'
-$FF_DIR     = Join-Path $ROOT 'ffmpeg'
-$PY_EXE     = Join-Path $PY_DIR 'python.exe'
+# 4 bootstrap steps here + 3 package steps in setup.py = 7 total
+$script:BarStep  = 0
+$script:BarTotal = 7
 
-
-function Write-Step { param([string]$T) Write-Host "  $T" -ForegroundColor White }
-function Write-OK   { param([string]$T) Write-Host "  OK  $T" -ForegroundColor Green }
-function Write-Fail { param([string]$T) Write-Host "  XX  $T" -ForegroundColor Red }
-
+function Show-Bar {
+    param([string]$Label)
+    $script:BarStep++
+    $width  = 40
+    $filled = [int]($width * $script:BarStep / $script:BarTotal)
+    $bar    = '#' * $filled + '-' * ($width - $filled)
+    $line   = "  [$bar]  $($script:BarStep)/$($script:BarTotal)  $Label"
+    Write-Host ("`r" + $line.PadRight(72)) -NoNewline
+}
 
 function Get-File {
-    param([string]$Url, [string]$Dest, [string]$Label, [string]$Sha256 = '')
-    Write-Step "Downloading $Label..."
+    param([string]$Url, [string]$Dest, [string]$Sha256 = '')
     try {
-        $wc = New-Object System.Net.WebClient
-        $wc.DownloadFile($Url, $Dest)
+        (New-Object System.Net.WebClient).DownloadFile($Url, $Dest)
     } catch {
-        throw "Failed to download $Label`: $_"
+        throw "Download failed: $_"
     }
     if ($Sha256) {
         $hash = (Get-FileHash -Path $Dest -Algorithm SHA256).Hash
         if ($hash -ne $Sha256.ToUpper()) {
             Remove-Item $Dest -Force -ErrorAction SilentlyContinue
-            throw "SHA256 mismatch for $Label"
+            throw "SHA256 mismatch"
         }
     }
-    Write-OK "$Label"
 }
 
-
 function Test-Cuda {
-    Write-Step "Checking NVIDIA GPU..."
-
-    # First try nvidia-smi -- present when drivers are installed
     $nvSmi = $null
     foreach ($c in @('nvidia-smi', 'C:\Windows\System32\nvidia-smi.exe',
                       'C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe')) {
@@ -71,22 +70,19 @@ function Test-Cuda {
     }
 
     if ($nvSmi) {
-        $gpu    = (& $nvSmi --query-gpu=name          --format=csv,noheader 2>&1) | Select-Object -First 1
-        $driver = (& $nvSmi --query-gpu=driver_version --format=csv,noheader 2>&1) | Select-Object -First 1
-        Write-OK "GPU detected: $($gpu.Trim())"
+        $gpu = (& $nvSmi --query-gpu=name --format=csv,noheader 2>&1) | Select-Object -First 1
+        Show-Bar "GPU: $($gpu.Trim())"
         return
     }
 
-    # nvidia-smi missing -- check if an NVIDIA GPU exists at all via WMI
     $nvidiaGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                 Where-Object { $_.Name -like '*NVIDIA*' } |
-                 Select-Object -First 1
+                 Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
 
+    Write-Host ""
     Write-Host ""
     Write-Host "  -------------------------------------------------------" -ForegroundColor Red
 
     if ($nvidiaGpu) {
-        # GPU found but driver not installed
         Write-Host "  NVIDIA GPU found but drivers are not installed." -ForegroundColor Red
         Write-Host "  -------------------------------------------------------" -ForegroundColor Red
         Write-Host ""
@@ -96,15 +92,12 @@ function Test-Cuda {
         Write-Host "  (You do NOT need a separate CUDA download -- it's included" -ForegroundColor Gray
         Write-Host "   in the standard driver.)" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "  Install your driver in one of two ways:" -ForegroundColor White
-        Write-Host ""
         Write-Host "  Option A -- NVIDIA App (easiest, auto-detects your GPU):" -ForegroundColor Cyan
         Write-Host "     https://www.nvidia.com/en-us/software/nvidia-app/" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "  Option B -- Manual driver download:" -ForegroundColor Cyan
         Write-Host "     https://www.nvidia.com/en-us/drivers/" -ForegroundColor Cyan
     } else {
-        # No NVIDIA GPU detected at all
         Write-Host "  No NVIDIA GPU detected." -ForegroundColor Red
         Write-Host "  -------------------------------------------------------" -ForegroundColor Red
         Write-Host ""
@@ -123,36 +116,29 @@ function Test-Cuda {
     exit 1
 }
 
-
 function Install-Python {
-    Write-Step "Setting up Python..."
     $tmp = Join-Path $env:TEMP 'cl34n_python.zip'
-    Get-File -Url $PYTHON_URL -Dest $tmp -Label "Python" -Sha256 $PYTHON_SHA256
+    Get-File -Url $PYTHON_URL -Dest $tmp -Sha256 $PYTHON_SHA256
     if (Test-Path $PY_DIR) { Remove-Item $PY_DIR -Recurse -Force }
     New-Item -ItemType Directory -Path $PY_DIR -Force | Out-Null
     Expand-Archive -Path $tmp -DestinationPath $PY_DIR -Force
     Remove-Item $tmp
-
     $pthFile = Get-ChildItem $PY_DIR -Filter '*._pth' | Select-Object -First 1
     if (-not $pthFile) { throw "Python ._pth not found -- extraction failed." }
     (Get-Content $pthFile.FullName -Raw) -replace '#import site', 'import site' |
         Set-Content $pthFile.FullName
-
-    Write-Step "Installing pip..."
     $getPip = Join-Path $env:TEMP 'cl34n_get_pip.py'
     (New-Object System.Net.WebClient).DownloadFile($GET_PIP_URL, $getPip)
     & $PY_EXE $getPip --quiet --no-warn-script-location 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "pip bootstrap failed" }
     Remove-Item $getPip
-    Write-OK "Python ready"
+    Show-Bar "Python"
 }
 
-
 function Install-FFmpeg {
-    Write-Step "Setting up audio tools..."
     $tmp    = Join-Path $env:TEMP 'cl34n_ffmpeg.zip'
     $tmpDir = Join-Path $env:TEMP 'cl34n_ffmpeg_extract'
-    Get-File -Url $FFMPEG_URL -Dest $tmp -Label "FFmpeg" -Sha256 $FFMPEG_SHA256
+    Get-File -Url $FFMPEG_URL -Dest $tmp -Sha256 $FFMPEG_SHA256
     if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
     Expand-Archive -Path $tmp -DestinationPath $tmpDir -Force
     Remove-Item $tmp
@@ -163,18 +149,16 @@ function Install-FFmpeg {
     Copy-Item (Join-Path $inner.FullName 'bin\ffmpeg.exe')  $FF_DIR
     Copy-Item (Join-Path $inner.FullName 'bin\ffprobe.exe') $FF_DIR
     Remove-Item $tmpDir -Recurse -Force
-    Write-OK "Audio tools ready"
+    Show-Bar "FFmpeg"
 }
 
-
 function Install-AppFiles {
-    Write-Step "Downloading app files from GitHub..."
     New-Item -ItemType Directory -Path $APP_DIR -Force | Out-Null
     $wc = New-Object System.Net.WebClient
     foreach ($f in @('cl34n.py', 'mdx_infer.py', 'model_registry.py', 'setup.py')) {
         $wc.DownloadFile("$GITHUB_RAW/$f", (Join-Path $APP_DIR $f))
     }
-    Write-OK "App files downloaded"
+    Show-Bar "App files"
 }
 
 
@@ -199,24 +183,27 @@ function Main {
     if ($confirm -notmatch '^[yY]') { Write-Host "  Cancelled. Nothing was changed."; return }
 
     Write-Host ""
-    Write-Host "  Installing... this will take a few minutes." -ForegroundColor Gray
+    Write-Host "  Installing... usually 3-5 minutes." -ForegroundColor Gray
     Write-Host ""
+
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
     try {
-        Test-Cuda
         New-Item -ItemType Directory -Path $ROOT -Force | Out-Null
+        Test-Cuda
         Install-Python
         Install-FFmpeg
         Install-AppFiles
 
-        Write-Step "Finishing setup..."
-        & $PY_EXE (Join-Path $APP_DIR 'setup.py')
+        # setup.py continues the bar from the current step
+        $env:PYTHONUTF8 = '1'
+        & $PY_EXE -u (Join-Path $APP_DIR 'setup.py') $script:BarStep $script:BarTotal
         if ($LASTEXITCODE -ne 0) { throw "setup.py failed (exit $LASTEXITCODE)" }
 
         $sw.Stop()
         $elapsed = [math]::Round($sw.Elapsed.TotalMinutes, 1)
 
+        Write-Host ""
         Write-Host ""
         Write-Host "  -------------------------------------------------------" -ForegroundColor Green
         Write-Host "  CL34N is installed! ($elapsed min)" -ForegroundColor Green
@@ -234,6 +221,7 @@ function Main {
     } catch {
         $sw.Stop()
         Write-Host ""
+        Write-Host ""
         Write-Host "  -------------------------------------------------------" -ForegroundColor Red
         Write-Host "  Installation failed." -ForegroundColor Red
         Write-Host "  -------------------------------------------------------" -ForegroundColor Red
@@ -242,7 +230,6 @@ function Main {
         Write-Host ""
         Write-Host "  Nothing was left on your computer." -ForegroundColor Yellow
         Write-Host ""
-
         foreach ($dir in @($PY_DIR, $FF_DIR, $APP_DIR)) {
             if (Test-Path $dir) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
         }

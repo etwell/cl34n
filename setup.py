@@ -20,6 +20,20 @@ MODELS_DIR = ROOT / 'models'
 RUN_BAT   = ROOT / 'run.bat'
 UNINSTALL = ROOT / 'uninstall.ps1'
 
+# install.ps1 passes the current step count so this script continues the same bar
+_bar_step  = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+_bar_total = int(sys.argv[2]) if len(sys.argv) > 2 else 7
+_BAR_WIDTH = 40
+
+
+def _bar(label):
+    global _bar_step
+    _bar_step += 1
+    filled = int(_BAR_WIDTH * _bar_step / _bar_total)
+    bar    = '#' * filled + '-' * (_BAR_WIDTH - filled)
+    line   = f'  [{bar}]  {_bar_step}/{_bar_total}  {label}'
+    print(f'\r{line:<72}', end='', flush=True)
+
 EXTENSIONS = ['.mp4', '.mkv', '.mov', '.avi', '.mp3', '.wav', '.m4a', '.flac']
 
 ORT_FEED = (
@@ -36,23 +50,17 @@ def _pip(*packages):
     )
 
 
-def _bar(step, total, label):
-    width = 20
-    filled = int(width * step / total)
-    bar = '#' * filled + '-' * (width - filled)
-    print(f'  [{bar}]  {step}/{total}  {label}    ', end='\r', flush=True)
-
-
 def install_packages():
     steps = [
-        ('Audio packages',  ['numpy', 'soundfile', 'librosa', 'soxr', 'resampy']),
-        ('CUDA runtime',    ['nvidia-cudnn-cu12']),
-        ('AI runtime',      ['--pre', 'onnxruntime-gpu', '--extra-index-url', ORT_FEED]),
+        ('Audio packages  (~50 MB)',  ['numpy', 'soundfile', 'librosa', 'soxr', 'resampy']),
+        ('CUDA runtime    (~400 MB)', ['nvidia-cudnn-cu12']),
+        ('AI runtime      (~900 MB)', ['--pre', 'onnxruntime-gpu', '--extra-index-url', ORT_FEED]),
     ]
-    for i, (label, pkgs) in enumerate(steps, 1):
-        _bar(i, len(steps), label)
+    for label, pkgs in steps:
+        _bar(label)
         _pip(*pkgs)
-    print(f'  [{"#" * 20}]  {len(steps)}/{len(steps)}  Done!              ')
+    _bar('Done!')
+    print()  # move past the bar line
 
 
 def write_run_bat():
@@ -77,7 +85,6 @@ def write_run_bat():
         'pause > nul\n'
     )
     RUN_BAT.write_text(bat, encoding='ascii')
-    print(f'  OK  run.bat -> {RUN_BAT}')
 
 
 def register_context_menu():
@@ -89,7 +96,6 @@ def register_context_menu():
             winreg.SetValueEx(k, 'Icon',    0, winreg.REG_SZ, str(PY_EXE))
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key + r'\command') as k:
             winreg.SetValueEx(k, '', 0, winreg.REG_SZ, command)
-    print(f'  OK  context menu registered for {" ".join(EXTENSIONS)}')
 
 
 def write_uninstaller():
@@ -136,7 +142,6 @@ Write-Host "  CL34N has been uninstalled." -ForegroundColor Green
 Write-Host ""
 """
     UNINSTALL.write_text(script, encoding='utf-8')
-    print(f'  OK  uninstaller -> {UNINSTALL}')
 
 
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,4 +151,3 @@ write_run_bat()
 register_context_menu()
 write_uninstaller()
 
-print('\n  Setup complete.\n')
