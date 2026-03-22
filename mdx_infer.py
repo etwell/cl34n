@@ -193,8 +193,8 @@ def run_mdx_separation(
     # ------------------------------------------------------------------
     # 6. Save both stems
     # ------------------------------------------------------------------
-    sf.write(str(vocals_path), vocals_audio.T, TARGET_SR, subtype='FLOAT')
-    sf.write(str(instrumental_path), instrumental_audio.T, TARGET_SR, subtype='FLOAT')
+    sf.write(str(vocals_path),       vocals_audio.T,       TARGET_SR, subtype='PCM_16')
+    sf.write(str(instrumental_path), instrumental_audio.T, TARGET_SR, subtype='PCM_16')
 
     if progress_callback:
         progress_callback(100)
