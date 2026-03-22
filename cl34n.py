@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
 """
-FRAME-PERFECT Single-Pass Music Removal (Keep Non-Music Sounds)
-Ensures perfect frame alignment for DaVinci Resolve compatibility
-Uses direct MDX-NET ONNX inference -- no PyTorch, no audio-separator.
+cl34n.py - Audio stem separator.
 
-KEY DIFFERENCE: This removes ONLY music, keeping:
-✓ Vocals
-✓ Sound effects (baseball hitting, gunshots, etc)
-✓ Ambient noise
-✓ Dialogue
-✓ All non-musical audio
-
-OUTPUTS:
-✓ input_music_removed.mp4  -- original video with music-removed audio
-✓ input_vocals.wav          -- vocals / speech / SFX as standalone WAV
-✓ input_instrumental.wav    -- isolated music track as standalone WAV
-
-REQUIREMENTS:
-✓ NVIDIA GPU with CUDA 12.x drivers
-✓ onnxruntime-gpu, numpy, soundfile, librosa  (~300 MB total, no PyTorch)
-✓ FFmpeg on PATH (or installed by install.ps1)
+Extracts audio from a video or audio file, runs MDX-NET ONNX inference,
+and writes two 16-bit WAV stems next to the original file.
 """
 
 import os
@@ -58,7 +42,6 @@ def _check_update():
     ver_file  = app_dir / 'version.txt'
     local_sha = ver_file.read_text().strip() if ver_file.exists() else ''
 
-    # Lightweight SHA-only check — single tiny response
     try:
         req = urllib.request.Request(
             _GITHUB_API,
@@ -70,14 +53,13 @@ def _check_update():
         return  # no internet or GitHub down — run normally
 
     if remote_sha == local_sha:
-        return  # already up to date
+        return
 
     print('  Updating CL34N...', end='\r', flush=True)
 
-    files    = []
+    files     = []
     tmp_files = []
     try:
-        # Read manifest to know what files and packages this version needs
         req = urllib.request.Request(
             f'{_GITHUB_RAW}/manifest.json',
             headers={'User-Agent': 'cl34n-updater'},
@@ -88,7 +70,6 @@ def _check_update():
         files    = manifest.get('files', [])
         packages = manifest.get('packages', [])
 
-        # Download every file listed in the manifest to a temp location first
         for fname in files:
             tmp = app_dir / (fname + '.new')
             req = urllib.request.Request(
@@ -99,7 +80,6 @@ def _check_update():
                 tmp.write_bytes(resp.read())
             tmp_files.append((tmp, app_dir / fname))
 
-        # Install any packages the new version needs (pip skips already-installed ones)
         if packages:
             subprocess.check_call(
                 [sys.executable, '-m', 'pip', 'install', '--quiet',
@@ -108,7 +88,6 @@ def _check_update():
                 stderr=subprocess.DEVNULL,
             )
 
-        # All good — atomically swap every file
         for tmp, dest in tmp_files:
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp.replace(dest)
@@ -120,7 +99,6 @@ def _check_update():
         sys.exit(0)
 
     except Exception:
-        # Clean up any partial downloads — leave current install untouched
         for tmp, _ in tmp_files:
             if tmp.exists():
                 tmp.unlink()
@@ -128,77 +106,80 @@ def _check_update():
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _fmt_eta(seconds):
-    seconds = max(0, int(seconds))
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m:02d}m {s:02d}s"
-    if m:
-        return f"{m}m {s:02d}s"
-    return f"{s}s"
-
-def get_video_info(video_file):
+def get_file_info(path):
+    """Return duration (seconds) and audio sample rate for any media file."""
     cmd = [
-        "ffprobe", "-v", "quiet", "-select_streams", "v:0", 
-        "-show_entries", "stream=r_frame_rate,duration,nb_frames",
-        "-show_entries", "format=duration",
-        "-show_entries", "stream=sample_rate:stream_tags=language",
-        "-of", "json", str(video_file)
+        'ffprobe', '-v', 'quiet',
+        '-show_entries', 'format=duration',
+        '-show_entries', 'stream=sample_rate,codec_type',
+        '-of', 'json', str(path)
     ]
-    
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        info = json.loads(result.stdout)
-        
-        frame_rate_str = info['streams'][0]['r_frame_rate']
-        fps_num, fps_den = map(int, frame_rate_str.split('/'))
-        fps = fps_num / fps_den
-        
+        info   = json.loads(result.stdout)
         duration = float(info['format']['duration'])
-        
-        try:
-            nb_frames = int(info['streams'][0]['nb_frames'])
-        except (KeyError, ValueError):
-            nb_frames = int(duration * fps)
-        
-        audio_sample_rate = 48000
+        sample_rate = 48000
         for stream in info.get('streams', []):
             if stream.get('codec_type') == 'audio' and 'sample_rate' in stream:
-                audio_sample_rate = int(stream['sample_rate'])
+                sample_rate = int(stream['sample_rate'])
                 break
-        
-        return {
-            'fps': fps,
-            'duration': duration,
-            'frame_count': nb_frames,
-            'frame_rate_str': frame_rate_str,
-            'audio_sample_rate': audio_sample_rate
-        }
-        
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as e:
-        print(f"  Warning: Could not get complete video info: {e}")
-        cmd_simple = ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(video_file)]
+        return {'duration': duration, 'audio_sample_rate': sample_rate}
+    except Exception:
+        cmd_simple = ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                      '-of', 'csv=p=0', str(path)]
         duration = float(subprocess.check_output(cmd_simple, text=True).strip())
-        return {
-            'fps': 30.0,
-            'duration': duration,
-            'frame_count': int(duration * 30),
-            'frame_rate_str': '30/1',
-            'audio_sample_rate': 48000
-        }
+        return {'duration': duration, 'audio_sample_rate': 48000}
+
 
 def _models_dir(base_dir):
-    """Return the models/ folder next to the script, then AppData fallback."""
+    """Return the models/ folder next to the script, falling back to AppData."""
     local = (base_dir or Path.cwd()) / 'models'
     if local.exists():
         return local
     return Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'CL34N' / 'models'
 
 
-def run_mdx_separation(audio_file, temp_dir, base_dir=None, model_path=None):
+def _draw_bar(label, pct, width=24):
+    filled = int(width * pct / 100)
+    bar    = '#' * filled + '-' * (width - filled)
+    print(f'  {label}  [{bar}]  {pct:3}%', end='\r', flush=True)
+
+
+def run_ffmpeg_with_progress(cmd, total_duration_seconds, step_name):
+    progress_cmd = cmd[:1] + ['-progress', '-', '-nostats'] + cmd[1:]
+    last_pct = -1
+    try:
+        process = subprocess.Popen(
+            progress_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, universal_newlines=True
+        )
+        for line in process.stdout:
+            if line.startswith('out_time_ms') and total_duration_seconds:
+                try:
+                    ms  = int(line.split('=')[1])
+                    pct = min(100, int((ms / 1_000_000) / total_duration_seconds * 100))
+                    if pct != last_pct:
+                        _draw_bar(step_name, pct)
+                        last_pct = pct
+                except ValueError:
+                    pass
+        process.wait()
+        if last_pct >= 0:
+            print()
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, progress_cmd)
+        return True
+    except subprocess.CalledProcessError:
+        print('\n  Error: ffmpeg failed.')
+        return False
+    except Exception as e:
+        print(f'\n  Error: {e}')
+        return False
+
+
+def run_mdx_separation(audio_file, temp_dir, model_path=None):
     """
-    Separate audio into vocals and instrumental using direct MDX-NET ONNX inference.
+    Run MDX-NET inference on audio_file and write vocals + instrumental to temp_dir.
     Returns (vocals_path, instrumental_path) or (None, None) on failure.
     """
     if audio_file.stat().st_size < 1024:
@@ -243,43 +224,8 @@ def run_mdx_separation(audio_file, temp_dir, base_dir=None, model_path=None):
         print(f'\n  Error: {e}')
         return None, None
 
-def _draw_bar(label, pct, width=24):
-    filled = int(width * pct / 100)
-    bar    = '#' * filled + '-' * (width - filled)
-    print(f'  {label}  [{bar}]  {pct:3}%', end='\r', flush=True)
 
-def run_ffmpeg_with_progress(cmd, total_duration_seconds, step_name, overall_start_time=None):
-    progress_cmd = cmd[:1] + ['-progress', '-', '-nostats'] + cmd[1:]
-    last_pct = -1
-    try:
-        process = subprocess.Popen(
-            progress_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, universal_newlines=True
-        )
-        for line in process.stdout:
-            if line.startswith('out_time_ms') and total_duration_seconds:
-                try:
-                    ms  = int(line.split('=')[1])
-                    pct = min(100, int((ms / 1_000_000) / total_duration_seconds * 100))
-                    if pct != last_pct:
-                        _draw_bar(step_name, pct)
-                        last_pct = pct
-                except ValueError:
-                    pass
-        process.wait()
-        if last_pct >= 0:
-            print()
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, progress_cmd)
-        return True
-    except subprocess.CalledProcessError:
-        print(f'\n  Error: ffmpeg failed.')
-        return False
-    except Exception as e:
-        print(f'\n  Error: {e}')
-        return False
-
-def single_pass_music_removal(video_file, video_info, base_dir, model_path=None,
+def single_pass_music_removal(video_file, file_info, base_dir, model_path=None,
                               primary_label='output', secondary_label='leftovers'):
     temp_audio = None
     temp_dir   = None
@@ -289,21 +235,20 @@ def single_pass_music_removal(video_file, video_info, base_dir, model_path=None,
         cmd_extract = [
             'ffmpeg', '-i', str(video_file),
             '-vn', '-acodec', 'flac',
-            '-ar', str(video_info['audio_sample_rate']),
+            '-ar', str(file_info['audio_sample_rate']),
             '-ac', '2',
             '-avoid_negative_ts', 'make_zero',
             '-y', str(temp_audio)
         ]
 
-        print('  Extracting audio...', end='\r', flush=True)
-        if not run_ffmpeg_with_progress(cmd_extract, video_info['duration'], '[1/2] Extracting audio'):
+        if not run_ffmpeg_with_progress(cmd_extract, file_info['duration'], '[1/2] Extracting audio'):
             return []
 
         temp_dir = base_dir / 'temp_separation_output'
         temp_dir.mkdir(exist_ok=True)
 
         vocals_file, instr_file = run_mdx_separation(
-            temp_audio, temp_dir, base_dir=base_dir, model_path=model_path
+            temp_audio, temp_dir, model_path=model_path
         )
 
         if not vocals_file or not vocals_file.exists():
@@ -331,6 +276,7 @@ def single_pass_music_removal(video_file, video_info, base_dir, model_path=None,
             shutil.rmtree(temp_dir, ignore_errors=True)
         return []
 
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='CL34N -- audio stem separator')
@@ -341,10 +287,9 @@ def main():
 
     _check_update()
 
-    base_dir = Path(Path(__file__).resolve().parent)
+    base_dir = Path(__file__).resolve().parent
     mdir     = _models_dir(base_dir)
 
-    # ── Task / model selection ────────────────────────────────────────────────
     if args.model:
         model_path      = mdir / args.model
         primary_label   = 'isolated_vocals' if 'Vocal' in args.model or 'Kim' in args.model else 'isolated_instrumental'
@@ -375,10 +320,10 @@ def main():
         return
 
     print(f'\n  File: {video_file.name}')
-    video_info = get_video_info(video_file)
-    start = time.time()
+    file_info = get_file_info(video_file)
+    start     = time.time()
 
-    stems = single_pass_music_removal(video_file, video_info, base_dir=base_dir,
+    stems = single_pass_music_removal(video_file, file_info, base_dir=base_dir,
                                       model_path=model_path,
                                       primary_label=primary_label,
                                       secondary_label=secondary_label)
@@ -392,6 +337,7 @@ def main():
     for s in stems:
         if s and s.exists():
             print(f'  {s.name}')
+
 
 if __name__ == "__main__":
     main()

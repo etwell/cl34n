@@ -2,8 +2,6 @@
 model_registry.py -- Task picker and model manager for CL34N.
 """
 
-from __future__ import annotations
-
 import hashlib
 import sys
 import urllib.request
@@ -118,7 +116,7 @@ def _draw_menu(sel: int, models_dir: Path, first: bool = False) -> None:
     sys.stdout.flush()
 
 
-def pick_task(models_dir: Path) -> 'tuple[Path, str, str] | None':
+def pick_task(models_dir: Path):
     """
     Show an arrow-key task menu and return (model_path, primary_label, secondary_label),
     or None if the user quits. Downloads and verifies the model if needed.
