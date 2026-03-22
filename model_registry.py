@@ -104,62 +104,84 @@ def _download(url: str, dest: Path, sha256: str) -> None:
 
 # ── Task picker ────────────────────────────────────────────────────────────────
 
+def _draw_menu(sel: int, models_dir: Path, first: bool = False) -> None:
+    """Redraw the task list in-place, highlighting the selected row with >."""
+    n = len(_TASKS)
+    if not first:
+        sys.stdout.write(f'\033[{n}A')  # move cursor up n lines
+    for i, task in enumerate(_TASKS):
+        marker     = '>' if i == sel else ' '
+        model_file = models_dir / task['model']
+        status     = '  [download required]' if not model_file.exists() else ''
+        line       = f'  {marker} {task["label"]:<26} {task["desc"]}{status}'
+        sys.stdout.write('\r' + line.ljust(80) + '\n')
+    sys.stdout.flush()
+
+
 def pick_task(models_dir: Path) -> 'tuple[Path, str, str] | None':
     """
-    Show a two-option task menu and return (model_path, primary_label, secondary_label),
+    Show an arrow-key task menu and return (model_path, primary_label, secondary_label),
     or None if the user quits. Downloads and verifies the model if needed.
     """
+    import msvcrt
+
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
 
+    sel = 0
+    n   = len(_TASKS)
+
     print('\n  CL34N\n')
-    for i, task in enumerate(_TASKS, 1):
-        model_file = models_dir / task['model']
-        status     = '' if model_file.exists() else '  [download required]'
-        print(f'    {i}  {task["label"]:<26} {task["desc"]}{status}')
+    print('  Use arrow keys to select, Enter to confirm, q to quit.\n')
+    _draw_menu(sel, models_dir, first=True)
 
     while True:
+        ch = msvcrt.getwch()
+
+        if ch in ('\r', '\n'):      # Enter — confirm selection
+            break
+        elif ch in ('q', '\x1b'):   # q or Escape — quit
+            print()
+            return None
+        elif ch in ('\x00', '\xe0'):  # extended key prefix (arrows, F-keys, etc.)
+            ch2 = msvcrt.getwch()
+            if ch2 == 'H':    # Up arrow
+                sel = (sel - 1) % n
+            elif ch2 == 'P':  # Down arrow
+                sel = (sel + 1) % n
+            else:
+                continue
+
+        _draw_menu(sel, models_dir)
+
+    print()  # move past the menu
+
+    task       = _TASKS[sel]
+    model_path = models_dir / task['model']
+
+    if not model_path.exists():
         try:
-            raw = input('\n  Select 1 or 2, or q to quit: ').strip()
+            confirm = input(f'\n  Model not downloaded yet (~200 MB). Download now? [y/N]: ').strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
-
-        if raw.lower() == 'q':
+        if confirm.lower() != 'y':
+            return None
+        try:
+            _download(task['url'], model_path, task['sha256'])
+        except RuntimeError as e:
+            print(f'\n  Error: {e}')
             return None
 
-        if raw not in ('1', '2'):
-            print('  Enter 1 or 2.')
-            continue
+    elif not verify_model(model_path):
+        print(f'\n  Warning: {task["model"]} failed integrity check -- re-downloading.')
+        try:
+            model_path.unlink()
+            _download(task['url'], model_path, task['sha256'])
+        except RuntimeError as e:
+            print(f'\n  Error: {e}')
+            return None
 
-        task       = _TASKS[int(raw) - 1]
-        model_path = models_dir / task['model']
-
-        if not model_path.exists():
-            try:
-                confirm = input(f'\n  Model not downloaded (~{task["url"].split("/")[-1]}). Download now? [y/N]: ').strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return None
-
-            if confirm.lower() != 'y':
-                continue
-
-            try:
-                _download(task['url'], model_path, task['sha256'])
-            except RuntimeError as e:
-                print(f'\n  Error: {e}')
-                continue
-
-        elif not verify_model(model_path):
-            print(f'\n  Warning: {task["model"]} failed integrity check -- re-downloading.')
-            try:
-                model_path.unlink()
-                _download(task['url'], model_path, task['sha256'])
-            except RuntimeError as e:
-                print(f'\n  Error: {e}')
-                continue
-
-        return model_path, task['primary'], task['secondary']
+    return model_path, task['primary'], task['secondary']
