@@ -29,17 +29,30 @@ ORT_FEED = (
 
 
 def _pip(*packages):
-    subprocess.check_call([str(PY_EXE), '-m', 'pip', 'install', '--quiet', *packages])
+    subprocess.check_call(
+        [str(PY_EXE), '-m', 'pip', 'install', '--quiet', '--no-warn-script-location', *packages],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _bar(step, total, label):
+    width = 20
+    filled = int(width * step / total)
+    bar = '#' * filled + '-' * (width - filled)
+    print(f'  [{bar}]  {step}/{total}  {label}    ', end='\r', flush=True)
 
 
 def install_packages():
-    print('  Installing audio packages...')
-    _pip('numpy', 'soundfile', 'librosa', 'soxr', 'resampy')
-    print('  Installing CUDA runtime (cuDNN)...')
-    _pip('nvidia-cudnn-cu12')
-    print('  Installing onnxruntime-gpu...')
-    _pip('--pre', 'onnxruntime-gpu', '--extra-index-url', ORT_FEED)
-    print('  OK  packages installed')
+    steps = [
+        ('Audio packages',  ['numpy', 'soundfile', 'librosa', 'soxr', 'resampy']),
+        ('CUDA runtime',    ['nvidia-cudnn-cu12']),
+        ('AI runtime',      ['--pre', 'onnxruntime-gpu', '--extra-index-url', ORT_FEED]),
+    ]
+    for i, (label, pkgs) in enumerate(steps, 1):
+        _bar(i, len(steps), label)
+        _pip(*pkgs)
+    print(f'  [{"#" * 20}]  {len(steps)}/{len(steps)}  Done!              ')
 
 
 def write_run_bat():

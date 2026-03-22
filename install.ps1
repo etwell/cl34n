@@ -141,7 +141,7 @@ function Install-Python {
     Write-Step "Installing pip..."
     $getPip = Join-Path $env:TEMP 'cl34n_get_pip.py'
     (New-Object System.Net.WebClient).DownloadFile($GET_PIP_URL, $getPip)
-    & $PY_EXE $getPip --quiet
+    & $PY_EXE $getPip --quiet --no-warn-script-location 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "pip bootstrap failed" }
     Remove-Item $getPip
     Write-OK "Python ready"
